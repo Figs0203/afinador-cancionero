@@ -1,20 +1,28 @@
 package io.github.figs0203.afinador.songbook
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.CharacterStyle
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.util.TypedValue
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import io.github.figs0203.afinador.R
+import io.github.figs0203.afinador.music.ChordShapes
+import io.github.figs0203.afinador.music.Chords
+import io.github.figs0203.afinador.music.Music
+import io.github.figs0203.afinador.ui.ChordDiagramView
 import io.github.figs0203.afinador.ui.applyEdgeToEdge
 
 /**
@@ -71,6 +79,12 @@ class SongViewActivity : Activity() {
             getString(R.string.song_source, current.source) + "  ·  " +
                 getString(R.string.song_capo, capo)
         }
+        findViewById<TextView>(R.id.chordHint).visibility =
+            if (current.text.lineSequence().any { ChordSheet.isChordLine(it) }) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
 
         transposeDown.setOnClickListener { shift(-1) }
         transposeUp.setOnClickListener { shift(1) }
@@ -133,6 +147,7 @@ class SongViewActivity : Activity() {
      */
     private fun textBlock(lines: List<SheetLine>): View {
         val builder = SpannableStringBuilder()
+        var hasChords = false
         lines.forEach { line ->
             val start = builder.length
             builder.append(line.text)
@@ -145,13 +160,126 @@ class SongViewActivity : Activity() {
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
                 builder.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                hasChords = addChordSpans(builder, line.text, start) || hasChords
             }
             builder.append('\n')
         }
         return sheetTextView().apply {
             text = builder
-            setTextIsSelectable(true)
+            if (hasChords) {
+                setOnTouchListener { view, event -> onSheetTouch(view as TextView, event) }
+            } else {
+                setTextIsSelectable(true)
+            }
         }
+    }
+
+    /** Makes every chord token of [line] open its fingering when tapped. */
+    private fun addChordSpans(
+        builder: SpannableStringBuilder,
+        line: String,
+        offset: Int
+    ): Boolean {
+        var found = false
+        var index = 0
+        while (index < line.length) {
+            val character = line[index]
+            if (character.isWhitespace() || character == '|') {
+                index++
+                continue
+            }
+            var end = index
+            while (end < line.length && !line[end].isWhitespace() && line[end] != '|') end++
+
+            val token = line.substring(index, end)
+            if (Chords.isChord(token)) {
+                builder.setSpan(
+                    ChordSpan(token),
+                    offset + index,
+                    offset + end,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                found = true
+            }
+            index = end
+        }
+        return found
+    }
+
+    /** Marks the characters of a chord; the touch listener finds it by offset. */
+    private inner class ChordSpan(val chord: String) : CharacterStyle() {
+        override fun updateDrawState(ds: TextPaint) = Unit
+    }
+
+    /**
+     * A click inside a ScrollView does not reliably reach a ClickableSpan, so
+     * the tap is resolved against the text layout: the chord under the finger is
+     * found by its character offset and its diagram is opened.
+     */
+    private fun onSheetTouch(sheetView: TextView, event: MotionEvent): Boolean =
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> chordAt(sheetView, event.x, event.y) != null
+            MotionEvent.ACTION_UP -> {
+                chordAt(sheetView, event.x, event.y)?.let { showChord(it.chord) }
+                true
+            }
+
+            else -> false
+        }
+
+    private fun chordAt(sheetView: TextView, x: Float, y: Float): ChordSpan? {
+        val layout = sheetView.layout ?: return null
+        val line = layout.getLineForVertical(y.toInt())
+        if (y < layout.getLineTop(line) || y > layout.getLineBottom(line)) return null
+        val offset = layout.getOffsetForHorizontal(line, x)
+        val content = sheetView.text as? Spanned ?: return null
+        if (offset < 0 || offset >= content.length) return null
+        return content.getSpans(offset, offset + 1, ChordSpan::class.java).firstOrNull()
+    }
+
+    private fun showChord(chord: String) {
+        val symbol = Chords.symbolOf(chord)
+        val shape = ChordShapes.find(chord)
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), dp(2))
+        }
+
+        if (shape != null) {
+            content.addView(
+                ChordDiagramView(this).apply { setShape(shape) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(230))
+            )
+        } else {
+            content.addView(TextView(this).apply {
+                text = getString(R.string.chord_no_diagram, chord)
+                setTextColor(getColor(R.color.text_secondary))
+                textSize = 13f
+                setLineSpacing(dp(3).toFloat(), 1f)
+            })
+        }
+
+        symbol?.bass?.let { bass ->
+            content.addView(
+                TextView(this).apply {
+                    text = getString(R.string.chord_bass, Music.nameOf(bass))
+                    setTextColor(getColor(R.color.text_secondary))
+                    textSize = 12f
+                    gravity = android.view.Gravity.CENTER
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+            )
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(chord)
+            .setView(content)
+            .setPositiveButton(R.string.chord_close, null)
+            .show()
     }
 
     /**

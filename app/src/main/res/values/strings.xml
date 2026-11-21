@@ -20,6 +20,12 @@
     <string name="tuning_chip_description">%1$s, cuerdas %2$s</string>
     <string name="string_chip_description">Cuerda %1$s</string>
 
+    <!-- Diagramas de acordes -->
+    <string name="song_chord_hint">Toca un acorde para ver cómo se toca</string>
+    <string name="chord_close">Cerrar</string>
+    <string name="chord_bass">Bajo: %1$s</string>
+    <string name="chord_no_diagram">Todavía no tengo la digitación de %1$s.</string>
+
     <!-- Cancionero -->
     <string name="songbook_title">Cancionero</string>
     <string name="songbook_subtitle">Acordes y tablaturas sin anuncios</string>

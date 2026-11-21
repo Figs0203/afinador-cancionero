@@ -31,6 +31,24 @@ object Chords {
         val bass: Parsed? = null
     )
 
+    /** The pieces of a chord symbol, used by the diagram library. */
+    data class Symbol(val root: Int, val quality: String, val bass: Int? = null)
+
+    /**
+     * Parses a chord token written in a sheet. Roots and basses come back as
+     * semitones of the octave (C = 0, C# = 1…) so shapes can be moved to them.
+     */
+    fun symbolOf(token: String): Symbol? {
+        val trimmed = token.trim()
+        if (trimmed.isEmpty()) return null
+        val wrapped = trimmed.length > 2 &&
+            (trimmed.first() == '(' || trimmed.first() == '[') &&
+            (trimmed.last() == ')' || trimmed.last() == ']')
+        val inner = if (wrapped) trimmed.substring(1, trimmed.length - 1) else trimmed
+        val parsed = parse(normalize(inner)) ?: return null
+        return Symbol(parsed.root, parsed.quality, parsed.bass?.root)
+    }
+
     fun isChord(token: String): Boolean {
         val trimmed = token.trim()
         if (trimmed.isEmpty()) return false
