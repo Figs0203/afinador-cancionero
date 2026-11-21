@@ -72,28 +72,38 @@ object SongImporter {
         }
     }
 
-    fun importFromUrl(url: String): Imported = extract(fetch(url), url)
+    fun importFromUrl(
+        url: String,
+        attempts: Int = 3,
+        connectTimeout: Int = 20_000,
+        readTimeout: Int = 45_000
+    ): Imported = extract(fetch(url, attempts, connectTimeout, readTimeout), url)
 
     /**
      * Descarga la página con varios intentos: Ultimate Guitar responde a veces
      * con 500/"Check 1,2..." o se queda colgado bajo carga, así que un reintento
      * tras una pausa corta resuelve la mayoría de los fallos transitorios.
      */
-    fun fetch(url: String): String {
+    fun fetch(
+        url: String,
+        attempts: Int = 3,
+        connectTimeout: Int = 20_000,
+        readTimeout: Int = 45_000
+    ): String {
         var lastError: Exception? = null
-        repeat(3) { attempt ->
+        repeat(attempts) { attempt ->
             try {
-                return fetchOnce(url)
+                return fetchOnce(url, connectTimeout, readTimeout)
             } catch (error: ImportException) {
                 // Los errores HTTP definitivos (403/429/404) no mejoran reintentando.
                 if (error.message?.contains("bloqueado") == true ||
                     error.message?.contains("error 4") == true
                 ) throw error
                 lastError = error
-                if (attempt < 2) runCatching { Thread.sleep(1500L * (attempt + 1)) }
+                if (attempt < attempts - 1) runCatching { Thread.sleep(1500L * (attempt + 1)) }
             } catch (error: Exception) {
                 lastError = error
-                if (attempt < 2) runCatching { Thread.sleep(1500L * (attempt + 1)) }
+                if (attempt < attempts - 1) runCatching { Thread.sleep(1500L * (attempt + 1)) }
             }
         }
         throw ImportException(
@@ -101,15 +111,15 @@ object SongImporter {
         )
     }
 
-    private fun fetchOnce(url: String): String {
+    private fun fetchOnce(url: String, connectTimeout: Int, readTimeout: Int): String {
         val connection = try {
             URL(url).openConnection() as HttpURLConnection
         } catch (error: Exception) {
             throw ImportException("Enlace no válido")
         }
 
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 45_000
+        connection.connectTimeout = connectTimeout
+        connection.readTimeout = readTimeout
         connection.instanceFollowRedirects = true
         connection.setRequestProperty("User-Agent", USER_AGENT)
         connection.setRequestProperty("Accept", "text/html,application/xhtml+xml")

@@ -78,6 +78,12 @@
     <string name="playlist_confirm_action">Importar lista</string>
     <string name="playlist_default_name">Lista de Ultimate Guitar</string>
     <string name="playlist_progress">Importando %1$d de %2$d · %3$s</string>
+    <string name="playlist_progress_stage">Importando %1$d de %2$d · %3$d %%</string>
+    <string name="playlist_progress_percent">Importando %1$d de %2$d · %3$d %% · %4$s</string>
+    <string name="playlist_found">%1$d canciones en la lista</string>
+    <string name="playlist_truncated">La lista tiene más canciones de las que la página entrega de una vez: se importarán %1$d.</string>
+    <string name="playlist_interrupted">La importación se interrumpió. Se guardaron %1$d canciones.</string>
+    <string name="playlist_too_large">El teléfono se quedó sin memoria al leer la lista. Se guardaron %1$d canciones; prueba con una lista más corta o cierra otras apps.</string>
     <string name="playlist_empty">La lista no tiene canciones.</string>
     <string name="playlist_failed">No se pudo leer la lista</string>
     <string name="playlist_summary_added">%1$d canciones añadidas</string>

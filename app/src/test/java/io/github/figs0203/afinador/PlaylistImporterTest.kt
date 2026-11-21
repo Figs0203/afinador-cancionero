@@ -76,6 +76,20 @@ class PlaylistImporterTest {
     }
 
     @Test
+    fun readsAThousandSongListWithoutCuttingItShort() {
+        val tabs = (1..1200).joinToString(",") { index ->
+            """{"tab":{"song_name":"Song $index","artist_name":"Artist ${index % 40}","tab_url":"https://tabs.ultimate-guitar.com/tab/artist-$index/song-$index-chords-$index"}}"""
+        }
+        val json = """{"page":{"data":{"songbook":{"name":"Enorme","tabs":[$tabs]}}}}"""
+
+        val playlist = PlaylistImporter.parse(playlistPage(json))
+
+        assertEquals(1200, playlist.entries.size)
+        assertFalse(playlist.truncated)
+        assertEquals("Song 1200", playlist.entries.last().title)
+    }
+
+    @Test
     fun failsWhenThePageIsNotAPlaylist() {
         val error = assertThrows(SongImporter.ImportException::class.java) {
             PlaylistImporter.parse("<html><body><pre>G D Em C</pre></body></html>")

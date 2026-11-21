@@ -91,6 +91,19 @@
                 android:textColor="@color/accent"
                 android:textSize="14sp" />
 
+            <ProgressBar
+                android:id="@+id/importBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_marginTop="10dp"
+                android:indeterminate="false"
+                android:max="100"
+                android:progress="0"
+                android:progressBackgroundTint="@color/stroke"
+                android:progressTint="@color/accent"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/importProgress"
                 android:layout_width="match_parent"

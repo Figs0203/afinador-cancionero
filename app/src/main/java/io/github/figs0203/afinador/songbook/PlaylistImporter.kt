@@ -18,12 +18,28 @@ object PlaylistImporter {
 
     data class Entry(val title: String, val artist: String, val url: String)
 
-    data class Playlist(val name: String, val entries: List<Entry>)
+    data class Playlist(
+        val name: String,
+        val entries: List<Entry>,
+        /** The list had more tabs than [MAX_ENTRIES], so it was cut short. */
+        val truncated: Boolean = false
+    )
 
     private val DATA_CONTENT = Regex("(?is)data-content=\"([^\"]+)\"")
 
-    /** A playlist is never worth downloading thousands of tabs for. */
-    private const val MAX_ENTRIES = 300
+    /**
+     * Big lists are normal (hundreds or thousands of tabs), so this is only a
+     * guard against a pathological page, not a practical limit.
+     */
+    const val MAX_ENTRIES = 5000
+
+    /**
+     * The page is a single multi-megabyte JSON blob, so reading it twice (once
+     * to confirm the list and again to download it) doubles the memory peak of
+     * the biggest step. The last list read is kept so the service reuses it.
+     */
+    private val cacheLock = Any()
+    private var cache: Pair<String, Playlist>? = null
 
     /** Playlists are only accepted from Ultimate Guitar, where the JSON exists. */
     fun isPlaylistUrl(url: String): Boolean {
@@ -33,7 +49,14 @@ object PlaylistImporter {
         return path.contains("/playlist")
     }
 
-    fun importFromUrl(url: String): Playlist = parse(SongImporter.fetch(url))
+    fun importFromUrl(url: String): Playlist {
+        synchronized(cacheLock) {
+            cache?.let { (cachedUrl, playlist) -> if (cachedUrl == url) return playlist }
+        }
+        val playlist = parse(SongImporter.fetch(url))
+        synchronized(cacheLock) { cache = url to playlist }
+        return playlist
+    }
 
     fun parse(html: String): Playlist {
         DATA_CONTENT.findAll(html).forEach { match ->
@@ -43,7 +66,18 @@ object PlaylistImporter {
             val songbook = findSongbook(root) ?: return@forEach
             val entries = entriesOf(songbook)
             if (entries.isNotEmpty()) {
-                return Playlist(songbook.optString("name").trim(), entries)
+                // tabsCount es el tamaño real de la lista; si la página no
+                // trajo todas las canciones, hay que decirlo en vez de fingir
+                // que la lista era más corta.
+                val tabs = maxOf(
+                    songbook.optJSONArray("tabs")?.length() ?: entries.size,
+                    songbook.optInt("tabsCount", entries.size)
+                )
+                return Playlist(
+                    name = songbook.optString("name").trim(),
+                    entries = entries,
+                    truncated = tabs > entries.size
+                )
             }
         }
 

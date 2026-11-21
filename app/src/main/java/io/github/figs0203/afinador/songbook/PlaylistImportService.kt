@@ -36,6 +36,13 @@ class PlaylistImportService : Service() {
         private const val CHANNEL_ID = "playlist_import"
         private const val NOTIF_ID = 4242
 
+        /**
+         * Long lists are saved every so often instead of only at the end, so a
+         * phone that kills the service keeps what was already downloaded.
+         */
+        private const val BATCH_SIZE = 100
+        private const val FLUSH_INTERVAL_MS = 20_000L
+
         interface ProgressListener {
             fun onProgress(
                 done: Boolean,
@@ -131,13 +138,20 @@ class PlaylistImportService : Service() {
     }
 
     private fun runImport(url: String, startId: Int) {
+        var total = 0
         var added = 0
         var skipped = 0
         var failed = 0
         try {
             updateNotification(getString(R.string.playlist_loading), 0, 0, true)
+            reportProgress(
+                done = false, total = 0, current = 0,
+                title = getString(R.string.playlist_loading),
+                added = 0, skipped = 0, failed = 0, error = null
+            )
+
             val playlist = PlaylistImporter.importFromUrl(url)
-            val total = playlist.entries.size
+            total = playlist.entries.size
             if (total == 0) {
                 val err = getString(R.string.playlist_empty)
                 reportProgress(
@@ -148,48 +162,79 @@ class PlaylistImportService : Service() {
                 return
             }
 
+            // The size of the list is known from here on, so the screen can show
+            // a real bar instead of an endless "reading the list" message.
+            reportProgress(
+                done = false, total = total, current = 0, title = "",
+                added = 0, skipped = 0, failed = 0, error = null
+            )
+            updateNotification(getString(R.string.playlist_found, total), 0, total, false)
+
             val store = SongStore(applicationContext)
             val knownLinks = store.all().mapNotNull { it.url }.toMutableSet()
-            val songs = mutableListOf<Song>()
+            val pending = mutableListOf<Song>()
+            var lastFlush = System.currentTimeMillis()
+
+            fun flush() {
+                if (pending.isEmpty()) return
+                val batch = pending.toList()
+                pending.clear()
+                store.addAll(batch)
+                lastFlush = System.currentTimeMillis()
+            }
 
             playlist.entries.forEachIndexed { index, entry ->
                 val current = index + 1
                 val msg = getString(R.string.playlist_progress, current, total, entry.title)
                 updateNotification(msg, current, total, false)
-                reportProgress(
-                    done = false, total = total, current = current,
-                    title = entry.title,
-                    added = songs.size, skipped = skipped, failed = failed,
-                    error = null
-                )
 
                 if (!knownLinks.add(entry.url)) {
                     skipped++
-                    return@forEachIndexed
+                } else {
+                    // Dentro de una lista no se puede esperar minutos por una
+                    // sola canción: con dos intentos cortos, el resto de la
+                    // lista sigue avanzando aunque ese enlace falle.
+                    val imported = runCatching {
+                        SongImporter.importFromUrl(
+                            entry.url,
+                            attempts = 2,
+                            connectTimeout = 12_000,
+                            readTimeout = 30_000
+                        )
+                    }.getOrNull()
+                    if (imported == null) {
+                        failed++
+                    } else {
+                        pending.add(
+                            Song(
+                                id = java.util.UUID.randomUUID().toString(),
+                                title = imported.title.ifBlank { entry.title }
+                                    .ifBlank { getString(R.string.song_unknown_title) }.take(120),
+                                artist = imported.artist.ifBlank { entry.artist }.take(120),
+                                source = SongImporter.labelFor(entry.url),
+                                url = entry.url,
+                                text = imported.text,
+                                savedAt = System.currentTimeMillis()
+                            )
+                        )
+                        added++
+                    }
                 }
 
-                val imported = runCatching { SongImporter.importFromUrl(entry.url) }.getOrNull()
-                if (imported == null) {
-                    failed++
-                    return@forEachIndexed
-                }
-
-                songs.add(
-                    Song(
-                        id = java.util.UUID.randomUUID().toString(),
-                        title = imported.title.ifBlank { entry.title }
-                            .ifBlank { getString(R.string.song_unknown_title) }.take(120),
-                        artist = imported.artist.ifBlank { entry.artist }.take(120),
-                        source = SongImporter.labelFor(entry.url),
-                        url = entry.url,
-                        text = imported.text,
-                        savedAt = System.currentTimeMillis()
-                    )
+                reportProgress(
+                    done = false, total = total, current = current,
+                    title = entry.title,
+                    added = added, skipped = skipped, failed = failed,
+                    error = null
                 )
-            }
 
-            store.addAll(songs)
-            added = songs.size
+                if (pending.size >= BATCH_SIZE ||
+                    System.currentTimeMillis() - lastFlush >= FLUSH_INTERVAL_MS
+                ) {
+                    flush()
+                }
+            }
+            flush()
 
             val summary = buildSummary(added, skipped, failed)
             reportProgress(
@@ -197,16 +242,41 @@ class PlaylistImportService : Service() {
                 added = added, skipped = skipped, failed = failed, error = null
             )
             notifyFinal(summary)
-        } catch (e: Exception) {
-            val err = e.message ?: getString(R.string.playlist_failed)
+        } catch (error: OutOfMemoryError) {
+            // A list of thousands of tabs can exhaust the heap while its page is
+            // parsed. Reporting it keeps the screen from waiting forever.
+            val message = getString(R.string.playlist_too_large, added)
             reportProgress(
-                done = true, total = 0, current = 0, title = "",
-                added = 0, skipped = 0, failed = 0, error = err
+                done = true, total = total, current = 0, title = "",
+                added = added, skipped = skipped, failed = failed, error = message
             )
-            notifyFinal(err)
+            notifyFinal(message)
+        } catch (error: Throwable) {
+            val message = error.message ?: getString(R.string.playlist_failed)
+            reportProgress(
+                done = true, total = total, current = 0, title = "",
+                added = added, skipped = skipped, failed = failed, error = message
+            )
+            notifyFinal(message)
         } finally {
             stopSelf(startId)
         }
+    }
+
+    /**
+     * If the import never reached a result (the system stopped the service, the
+     * app was killed), the screen must not keep showing "reading the list".
+     */
+    override fun onDestroy() {
+        val state = lastProgress
+        if (state != null && !state.done) {
+            reportProgress(
+                done = true, total = state.total, current = state.current, title = "",
+                added = state.added, skipped = state.skipped, failed = state.failed,
+                error = getString(R.string.playlist_interrupted, state.added)
+            )
+        }
+        super.onDestroy()
     }
 
     private fun reportProgress(

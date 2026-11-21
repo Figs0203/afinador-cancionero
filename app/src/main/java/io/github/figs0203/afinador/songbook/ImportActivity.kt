@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import io.github.figs0203.afinador.R
@@ -31,6 +32,7 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
     private lateinit var titleInput: EditText
     private lateinit var pasteInput: EditText
     private lateinit var progress: TextView
+    private lateinit var importBar: ProgressBar
     private lateinit var linkButton: TextView
     private lateinit var saveButton: TextView
     private val store by lazy { SongStore(this) }
@@ -49,11 +51,29 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
         if (isFinishing) return
         if (!done) {
             if (total > 0) {
-                showMessage(getString(R.string.playlist_progress, current, total, title), false)
+                val percent = (current * 100 / total).coerceIn(0, 100)
+                importBar.isIndeterminate = false
+                importBar.visibility = View.VISIBLE
+                importBar.progress = percent
+                showMessage(
+                    when {
+                        current == 0 -> getString(R.string.playlist_found, total)
+                        title.isBlank() ->
+                            getString(R.string.playlist_progress_stage, current, total, percent)
+                        else ->
+                            getString(R.string.playlist_progress_percent, current, total, percent, title)
+                    },
+                    false
+                )
             } else {
+                // Todavía no se sabe cuántas canciones hay: la barra se mueve
+                // para que se vea que la app está trabajando y no colgada.
+                importBar.isIndeterminate = true
+                importBar.visibility = View.VISIBLE
                 showMessage(title.ifBlank { getString(R.string.playlist_loading) }, false)
             }
         } else {
+            hideProgressBar()
             setBusy(false)
             if (error != null) {
                 showMessage(error, true)
@@ -72,6 +92,7 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
         titleInput = findViewById(R.id.titleInput)
         pasteInput = findViewById(R.id.pasteInput)
         progress = findViewById(R.id.importProgress)
+        importBar = findViewById(R.id.importBar)
         linkButton = findViewById(R.id.linkButton)
         saveButton = findViewById(R.id.saveButton)
 
@@ -187,9 +208,16 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
 
     private fun confirmPlaylist(playlist: PlaylistImporter.Playlist) {
         val name = playlist.name.ifBlank { getString(R.string.playlist_default_name) }
+        val message = buildString {
+            append(getString(R.string.playlist_confirm_message, name, playlist.entries.size))
+            if (playlist.truncated) {
+                append("\n\n")
+                append(getString(R.string.playlist_truncated, playlist.entries.size))
+            }
+        }
         AlertDialog.Builder(this)
             .setTitle(R.string.playlist_confirm_title)
-            .setMessage(getString(R.string.playlist_confirm_message, name, playlist.entries.size))
+            .setMessage(message)
             .setNegativeButton(R.string.songbook_cancel, null)
             .setPositiveButton(R.string.playlist_confirm_action) { _, _ ->
                 importPlaylist(playlist)
@@ -268,6 +296,12 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
                 .putExtra(SongViewActivity.EXTRA_SONG_ID, song.id)
         )
         finish()
+    }
+
+    private fun hideProgressBar() {
+        importBar.isIndeterminate = false
+        importBar.progress = 0
+        importBar.visibility = View.GONE
     }
 
     private fun setBusy(busy: Boolean) {
