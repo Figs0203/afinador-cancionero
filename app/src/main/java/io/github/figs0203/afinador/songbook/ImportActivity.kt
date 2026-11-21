@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.EditText
 import android.widget.ProgressBar
@@ -13,6 +15,7 @@ import android.widget.TextView
 import android.widget.Toast
 import io.github.figs0203.afinador.R
 import io.github.figs0203.afinador.ui.applyEdgeToEdge
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -37,6 +40,23 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
     private lateinit var saveButton: TextView
     private val store by lazy { SongStore(this) }
     private var currentPlaylistUrl: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Estado de la lectura de la lista. La pantalla muestra segundos, bytes y
+    // porcentaje mientras se descarga, para que una lista enorme no parezca una
+    // app colgada aunque Ultimate Guitar tarde minutos en responder.
+    @Volatile private var readStartedAt = 0L
+    @Volatile private var readBytes = 0L
+    @Volatile private var readTotal = 0L
+    @Volatile private var readParsing = false
+
+    private val readTicker = object : Runnable {
+        override fun run() {
+            if (readStartedAt == 0L) return
+            updateReadStatus()
+            mainHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     override fun onProgress(
         done: Boolean,
@@ -112,6 +132,7 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
     }
 
     override fun onDestroy() {
+        stopReadStatus()
         PlaylistImportService.unregisterListener(this)
         super.onDestroy()
     }
@@ -185,12 +206,23 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
     private fun readPlaylist(url: String) {
         currentPlaylistUrl = url
         setBusy(true)
-        showMessage(getString(R.string.playlist_loading), false)
+        startReadStatus()
         Thread {
-            val result = runCatching { PlaylistImporter.importFromUrl(url) }
+            val result = runCatching {
+                PlaylistImporter.importFromUrl(
+                    url,
+                    onDownload = { downloaded, total ->
+                        readBytes = downloaded
+                        readTotal = total
+                    },
+                    onParsing = { readParsing = true }
+                )
+            }
             runOnUiThread {
+                stopReadStatus()
                 if (isFinishing) return@runOnUiThread
                 setBusy(false)
+                hideProgressBar()
                 result
                     .onSuccess { playlist ->
                         if (playlist.entries.isEmpty()) {
@@ -200,10 +232,96 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
                         }
                     }
                     .onFailure { error ->
-                        showMessage(error.message ?: getString(R.string.playlist_failed), true)
+                        showMessage(
+                            if (error is SongImporter.TimeoutException) {
+                                getString(
+                                    R.string.playlist_timeout,
+                                    (PlaylistImporter.PAGE_DEADLINE_MS / 1000L).toInt()
+                                )
+                            } else {
+                                error.message ?: getString(R.string.playlist_failed)
+                            },
+                            true
+                        )
                     }
             }
         }.start()
+    }
+
+    /**
+     * Mientras se lee la lista, la pantalla avanza cada segundo con el tiempo
+     * transcurrido y lo descargado. Así el usuario sabe cuánto lleva y cuánto
+     * puede faltar en vez de ver un texto fijo que parece congelado.
+     */
+    private fun startReadStatus() {
+        readStartedAt = System.currentTimeMillis()
+        readBytes = 0L
+        readTotal = 0L
+        readParsing = false
+        importBar.visibility = View.VISIBLE
+        importBar.isIndeterminate = true
+        showMessage(getString(R.string.playlist_reading_elapsed, 0), false)
+        mainHandler.removeCallbacks(readTicker)
+        mainHandler.postDelayed(readTicker, 1_000L)
+    }
+
+    private fun stopReadStatus() {
+        mainHandler.removeCallbacks(readTicker)
+        readStartedAt = 0L
+    }
+
+    private fun updateReadStatus() {
+        if (isFinishing || readStartedAt == 0L) return
+        val seconds = ((System.currentTimeMillis() - readStartedAt) / 1_000L).toInt()
+
+        if (readParsing) {
+            importBar.isIndeterminate = true
+            showMessage(getString(R.string.playlist_parsing_elapsed, seconds), false)
+            return
+        }
+
+        val percent = if (readTotal > 0L) {
+            (readBytes * 100L / readTotal).toInt().coerceIn(0, 100)
+        } else {
+            -1
+        }
+
+        val text = when {
+            percent >= 0 -> {
+                importBar.isIndeterminate = false
+                importBar.progress = percent
+                getString(R.string.playlist_downloading_percent, percent, seconds)
+            }
+
+            readBytes > 0L -> {
+                importBar.isIndeterminate = true
+                getString(R.string.playlist_downloading_elapsed, formatBytes(readBytes), seconds)
+            }
+
+            else -> {
+                importBar.isIndeterminate = true
+                getString(R.string.playlist_reading_elapsed, seconds)
+            }
+        }
+
+        showMessage(
+            if (seconds >= 10) {
+                text + "\n" + getString(R.string.playlist_reading_hint)
+            } else {
+                text
+            },
+            false
+        )
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L ->
+            String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
+
+        bytes >= 1024L ->
+            String.format(Locale.getDefault(), "%.0f KB", bytes / 1024.0)
+
+        else -> "$bytes B"
     }
 
     private fun confirmPlaylist(playlist: PlaylistImporter.Playlist) {
@@ -235,6 +353,8 @@ class ImportActivity : Activity(), PlaylistImportService.Companion.ProgressListe
             return
         }
         showMessage(getString(R.string.playlist_loading), false)
+        importBar.visibility = View.VISIBLE
+        importBar.isIndeterminate = true
         PlaylistImportService.start(this, url)
     }
 

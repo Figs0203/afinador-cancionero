@@ -252,7 +252,14 @@ class PlaylistImportService : Service() {
             )
             notifyFinal(message)
         } catch (error: Throwable) {
-            val message = error.message ?: getString(R.string.playlist_failed)
+            val message = if (error is SongImporter.TimeoutException) {
+                getString(
+                    R.string.playlist_timeout,
+                    (PlaylistImporter.PAGE_DEADLINE_MS / 1000L).toInt()
+                )
+            } else {
+                error.message ?: getString(R.string.playlist_failed)
+            }
             reportProgress(
                 done = true, total = total, current = 0, title = "",
                 added = added, skipped = skipped, failed = failed, error = message

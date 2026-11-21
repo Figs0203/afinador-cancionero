@@ -86,6 +86,14 @@
     <string name="playlist_too_large">El teléfono se quedó sin memoria al leer la lista. Se guardaron %1$d canciones; prueba con una lista más corta o cierra otras apps.</string>
     <string name="playlist_empty">La lista no tiene canciones.</string>
     <string name="playlist_failed">No se pudo leer la lista</string>
+    <!-- Lectura de la lista: la pantalla muestra segundos, bytes y porcentaje
+         para que una lista grande no parezca una app colgada. -->
+    <string name="playlist_reading_elapsed">Leyendo la lista… %1$d s</string>
+    <string name="playlist_downloading_elapsed">Descargando la lista… %1$s · %2$d s</string>
+    <string name="playlist_downloading_percent">Descargando la lista… %1$d %% · %2$d s</string>
+    <string name="playlist_parsing_elapsed">Analizando la lista… %1$d s</string>
+    <string name="playlist_reading_hint">Las listas con miles de canciones pueden tardar varios minutos. No cierres la app.</string>
+    <string name="playlist_timeout">La lista no terminó de descargarse en %1$d s. Comprueba tu conexión e inténtalo de nuevo; si sigue igual, ábrela en el navegador y prueba más tarde.</string>
     <string name="playlist_summary_added">%1$d canciones añadidas</string>
     <string name="playlist_summary_skipped">%1$d ya estaban</string>
     <string name="playlist_summary_skipped_one">%1$d ya estaba</string>

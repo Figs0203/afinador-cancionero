@@ -21,7 +21,14 @@ import java.util.zip.GZIPInputStream
  */
 object SongImporter {
 
-    class ImportException(message: String) : Exception(message)
+    open class ImportException(message: String) : Exception(message)
+
+    /**
+     * La descarga completa de una página (no una sola lectura) superó el tiempo
+     * máximo. Sin este tope, una página servida a cuentagotas puede mantener la
+     * conexión viva y dejar la importación esperando para siempre.
+     */
+    class TimeoutException(message: String) : ImportException(message)
 
     data class Imported(val title: String, val artist: String, val text: String)
 
@@ -88,12 +95,17 @@ object SongImporter {
         url: String,
         attempts: Int = 3,
         connectTimeout: Int = 20_000,
-        readTimeout: Int = 45_000
+        readTimeout: Int = 45_000,
+        deadlineMs: Long = 0L,
+        onProgress: ((downloaded: Long, total: Long) -> Unit)? = null
     ): String {
         var lastError: Exception? = null
         repeat(attempts) { attempt ->
             try {
-                return fetchOnce(url, connectTimeout, readTimeout)
+                return fetchOnce(url, connectTimeout, readTimeout, deadlineMs, onProgress)
+            } catch (error: TimeoutException) {
+                // Se agotó el tiempo total: reintentar solo alarga la espera.
+                throw error
             } catch (error: ImportException) {
                 // Los errores HTTP definitivos (403/429/404) no mejoran reintentando.
                 if (error.message?.contains("bloqueado") == true ||
@@ -111,7 +123,13 @@ object SongImporter {
         )
     }
 
-    private fun fetchOnce(url: String, connectTimeout: Int, readTimeout: Int): String {
+    private fun fetchOnce(
+        url: String,
+        connectTimeout: Int,
+        readTimeout: Int,
+        deadlineMs: Long,
+        onProgress: ((downloaded: Long, total: Long) -> Unit)?
+    ): String {
         val connection = try {
             URL(url).openConnection() as HttpURLConnection
         } catch (error: Exception) {
@@ -142,25 +160,78 @@ object SongImporter {
                     }
                 )
             }
+            val startedAt = System.currentTimeMillis()
+            val counted = CountingInputStream(connection.inputStream)
             val stream = if (connection.contentEncoding?.contains("gzip", true) == true) {
-                GZIPInputStream(connection.inputStream)
+                GZIPInputStream(counted)
             } else {
-                connection.inputStream
+                counted
             }
-            val body = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            if (body.contains("Check 1,2", ignoreCase = true)) {
+            // Tamaño del cuerpo tal como llega por la red; -1 si el servidor no
+            // lo declara (o si Android descomprime el gzip por su cuenta).
+            val total = connection.contentLength.toLong().coerceAtLeast(0L)
+            onProgress?.invoke(0L, total)
+
+            val body = StringBuilder(
+                if (total in 1_024L..33_554_432L) total.toInt() else 0
+            )
+            val buffer = CharArray(16 * 1024)
+            var lastReport = startedAt
+            stream.bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    // Límite total, no por lectura: una página que gotea bytes
+                    // despacio mantendría viva la conexión para siempre.
+                    if (deadlineMs > 0 && System.currentTimeMillis() - startedAt > deadlineMs) {
+                        throw TimeoutException(
+                            "La descarga tardó más de ${deadlineMs / 1000L} s"
+                        )
+                    }
+                    val read = reader.read(buffer)
+                    if (read < 0) break
+                    body.append(buffer, 0, read)
+                    val now = System.currentTimeMillis()
+                    if (onProgress != null && now - lastReport >= 250L) {
+                        lastReport = now
+                        onProgress(counted.count, total)
+                    }
+                }
+            }
+            onProgress?.invoke(counted.count, total)
+
+            val bodyText = body.toString()
+            if (bodyText.contains("Check 1,2", ignoreCase = true)) {
                 throw ImportException(
                     "Ultimate Guitar está en mantenimiento (\"Check 1,2...\"). " +
                         "Intenta más tarde o abre la página y pega el texto."
                 )
             }
-            return body
+            return bodyText
         } catch (error: ImportException) {
             throw error
         } catch (error: Exception) {
             throw ImportException("No se pudo descargar la página: ${error.message ?: "sin conexión"}")
         } finally {
             connection.disconnect()
+        }
+    }
+
+    /** Counts the bytes that actually came through the socket, for progress. */
+    private class CountingInputStream(input: java.io.InputStream) :
+        java.io.FilterInputStream(input) {
+
+        var count = 0L
+            private set
+
+        override fun read(): Int {
+            val value = super.read()
+            if (value >= 0) count++
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val read = super.read(buffer, offset, length)
+            if (read > 0) count += read
+            return read
         }
     }
 

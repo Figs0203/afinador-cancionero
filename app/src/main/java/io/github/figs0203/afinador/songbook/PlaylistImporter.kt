@@ -34,6 +34,13 @@ object PlaylistImporter {
     const val MAX_ENTRIES = 5000
 
     /**
+     * Una lista con miles de canciones puede tardar varios minutos en bajar,
+     * pero no puede esperar sin fin: pasado este tiempo se avisa al usuario en
+     * vez de dejar la pantalla en "Leyendo la lista…" toda la noche.
+     */
+    const val PAGE_DEADLINE_MS = 180_000L
+
+    /**
      * The page is a single multi-megabyte JSON blob, so reading it twice (once
      * to confirm the list and again to download it) doubles the memory peak of
      * the biggest step. The last list read is kept so the service reuses it.
@@ -49,11 +56,22 @@ object PlaylistImporter {
         return path.contains("/playlist")
     }
 
-    fun importFromUrl(url: String): Playlist {
+    fun importFromUrl(
+        url: String,
+        onDownload: ((downloaded: Long, total: Long) -> Unit)? = null,
+        onParsing: (() -> Unit)? = null,
+        deadlineMs: Long = PAGE_DEADLINE_MS
+    ): Playlist {
         synchronized(cacheLock) {
             cache?.let { (cachedUrl, playlist) -> if (cachedUrl == url) return playlist }
         }
-        val playlist = parse(SongImporter.fetch(url))
+        val html = SongImporter.fetch(
+            url,
+            deadlineMs = deadlineMs,
+            onProgress = onDownload
+        )
+        onParsing?.invoke()
+        val playlist = parse(html)
         synchronized(cacheLock) { cache = url to playlist }
         return playlist
     }
