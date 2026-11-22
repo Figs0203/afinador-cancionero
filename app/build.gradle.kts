@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.figs0203.afinador"
         minSdk = 23
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.4.8"
+        versionCode = 18
+        versionName = "1.4.9"
         resourceConfigurations += listOf("es", "en")
     }
 

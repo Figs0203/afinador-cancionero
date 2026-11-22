@@ -322,8 +322,6 @@ object SongImporter {
         return text.trim('\n', ' ', '\t')
     }
 
-    private val NAMED_ENTITY = Regex("&([A-Za-z][A-Za-z0-9]{1,31});")
-
     // Los títulos de Ultimate Guitar escapan los acentos con entidades HTML
     // (por ejemplo "Seegra&szlig;spinnerei"), así que hay que deshacerlas.
     private val NAMED_ENTITIES = mapOf(
@@ -351,26 +349,113 @@ object SongImporter {
     )
 
     internal fun unescapeEntities(text: String): String {
-        var value = Regex("&#x([0-9a-fA-F]{1,6});").replace(text) { match ->
-            runCatching { String(Character.toChars(match.groupValues[1].toInt(16))) }
-                .getOrDefault(match.value)
-        }
-        value = Regex("&#(\\d{1,7});").replace(value) { match ->
-            runCatching { String(Character.toChars(match.groupValues[1].toInt())) }
-                .getOrDefault(match.value)
-        }
-        value = NAMED_ENTITY.replace(value) { match ->
-            NAMED_ENTITIES[match.groupValues[1]] ?: match.value
-        }
+        if (text.indexOf('&') < 0) return text
+        // Primero las entidades numéricas y después las con nombre, igual que
+        // antes: así un `&#38;szlig;` sigue produciendo «ß».
+        var value = decodeEntities(text, named = false)
+        value = decodeEntities(value, named = true)
+        // Las entidades básicas se deshacen al final para que un `&amp;quot;`
+        // no se convierta en una comilla de más.
+        value = replaceLiteral(value, "&nbsp;", " ")
+        value = replaceLiteral(value, "&quot;", "\"")
+        value = replaceLiteral(value, "&apos;", "'")
+        value = replaceLiteral(value, "&#39;", "'")
+        value = replaceLiteral(value, "&lt;", "<")
+        value = replaceLiteral(value, "&gt;", ">")
+        value = replaceLiteral(value, "&amp;", "&")
         return value
-            .replace("&nbsp;", " ")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&#39;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&amp;", "&")
     }
+
+    /**
+     * Deshace entidades HTML recorriendo el texto una sola vez.
+     *
+     * No se usan expresiones regulares con transformación (`Regex.replace {}`):
+     * en Android cada coincidencia vuelve a empezar el emparejamiento sobre el
+     * texto completo. Una lista de mil canciones trae cientos de miles de
+     * `&quot;`, así que ese camino se quedaba horas en «Analizando la lista…».
+     * Con un `StringBuilder` y `indexOf` el coste es lineal.
+     */
+    private fun decodeEntities(text: String, named: Boolean): String {
+        var amp = text.indexOf('&')
+        if (amp < 0) return text
+        val out = StringBuilder(text.length)
+        var copied = 0
+        while (amp >= 0) {
+            val end = if (named) namedEntityEnd(text, amp) else numericEntityEnd(text, amp)
+            if (end > 0) {
+                out.append(text, copied, amp)
+                val decoded =
+                    if (named) NAMED_ENTITIES[text.substring(amp + 1, end - 1)]
+                    else numericEntity(text, amp, end)
+                if (decoded != null) out.append(decoded) else out.append(text, amp, end)
+                copied = end
+                amp = text.indexOf('&', copied)
+            } else {
+                amp = text.indexOf('&', amp + 1)
+            }
+        }
+        out.append(text, copied, text.length)
+        return out.toString()
+    }
+
+    /** `&#x1F600;` o `&#128512;`, con los mismos límites que antes. */
+    private fun numericEntityEnd(text: String, start: Int): Int {
+        var index = start + 1
+        if (index >= text.length || text[index] != '#') return -1
+        index++
+        if (index < text.length && text[index] == 'x') {
+            index++
+            val digits = index
+            while (index < text.length && index - digits < 6 && isHexDigit(text[index])) index++
+            if (index == digits) return -1
+            return if (index < text.length && text[index] == ';') index + 1 else -1
+        }
+        val digits = index
+        while (index < text.length && index - digits < 7 && text[index] in '0'..'9') index++
+        if (index == digits) return -1
+        return if (index < text.length && text[index] == ';') index + 1 else -1
+    }
+
+    /** `&szlig;`: una letra y hasta 31 caracteres alfanuméricos. */
+    private fun namedEntityEnd(text: String, start: Int): Int {
+        var index = start + 1
+        if (index >= text.length || !isAsciiLetter(text[index])) return -1
+        val nameStart = index
+        index++
+        while (index < text.length && index - nameStart < 32 && isAsciiLetterOrDigit(text[index])) index++
+        if (index - nameStart < 2) return -1
+        return if (index < text.length && text[index] == ';') index + 1 else -1
+    }
+
+    private fun numericEntity(text: String, start: Int, end: Int): String? {
+        val hex = start + 2 < end && text[start + 2] == 'x'
+        val digitsStart = if (hex) start + 3 else start + 2
+        val code = text.substring(digitsStart, end - 1)
+            .toIntOrNull(if (hex) 16 else 10) ?: return null
+        return runCatching { String(Character.toChars(code)) }.getOrNull()
+    }
+
+    private fun replaceLiteral(text: String, target: String, replacement: String): String {
+        var found = text.indexOf(target)
+        if (found < 0) return text
+        val out = StringBuilder(text.length)
+        var copied = 0
+        while (found >= 0) {
+            out.append(text, copied, found)
+            out.append(replacement)
+            copied = found + target.length
+            found = text.indexOf(target, copied)
+        }
+        out.append(text, copied, text.length)
+        return out.toString()
+    }
+
+    private fun isAsciiLetter(c: Char) = c in 'A'..'Z' || c in 'a'..'z'
+
+    private fun isAsciiLetterOrDigit(c: Char) = isAsciiLetter(c) || c in '0'..'9'
+
+    private fun isHexDigit(c: Char) =
+        c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
 
     // ------------------------------------------------------------ metadata
 

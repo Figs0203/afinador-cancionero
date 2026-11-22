@@ -2,6 +2,7 @@ package io.github.figs0203.afinador
 
 import io.github.figs0203.afinador.songbook.SongImporter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -132,6 +133,38 @@ class SongImporterTest {
             SongImporter.unescapeEntities("Seegra&szlig;spinnerei &middot; Legi&atilde;o Urbana")
         )
         assertEquals("&desconocida; &", SongImporter.unescapeEntities("&desconocida; &amp;"))
+    }
+
+    @Test
+    fun decodesNumericAndBasicEntities() {
+        assertEquals(
+            "\"Hola\" & <más>",
+            SongImporter.unescapeEntities("&quot;Hola&quot; &amp; &lt;más&gt;")
+        )
+        assertEquals("A B", SongImporter.unescapeEntities("A&nbsp;B"))
+        assertEquals("'", SongImporter.unescapeEntities("&#39;"))
+        assertEquals("😀", SongImporter.unescapeEntities("&#x1F600;"))
+        assertEquals("😀", SongImporter.unescapeEntities("&#128512;"))
+        // Las entidades inválidas o incompletas se dejan tal cual.
+        assertEquals("&#xZZ; &#12345678; &a;", SongImporter.unescapeEntities("&#xZZ; &#12345678; &a;"))
+        // Primero lo numérico y después lo nombrado, como siempre.
+        assertEquals("ß", SongImporter.unescapeEntities("&#38;szlig;"))
+        assertEquals("&amp;quot;", SongImporter.unescapeEntities("&amp;amp;quot;"))
+    }
+
+    @Test(timeout = 10_000)
+    fun decodesHundredsOfThousandsOfQuotesQuickly() {
+        // Cada página de lista trae cientos de miles de `&quot;`: con el
+        // reemplazo por expresión regular y transformación, Android se quedaba
+        // horas analizando una lista de mil canciones.
+        val input = "{\"title\":\"&quot;x&quot; &amp; &szlig;\"},".repeat(50_000)
+        val output = SongImporter.unescapeEntities(input)
+        assertFalse(output.contains("&quot;"))
+        assertFalse(output.contains("&szlig;"))
+        assertEquals(
+            input.replace("&quot;", "\"").replace("&szlig;", "ß").replace("&amp;", "&"),
+            output
+        )
     }
 
     @Test
